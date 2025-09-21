@@ -754,7 +754,7 @@ if st.sidebar.button("🔍 Realizar Análisis", type="primary", use_container_wi
             factor_data = {
                 'Factor': [],
                 'Nivel de Riesgo': [],
-                'Descripción': []
+                'Descripcion': []
             }
             
             for factor, data in interpretations.items():
@@ -762,7 +762,7 @@ if st.sidebar.button("🔍 Realizar Análisis", type="primary", use_container_wi
                 # Convertir nivel a valor numérico para el gráfico
                 level_map = {'NORMAL': 0.2, 'BAJO': 0.3, 'MODERADO': 0.6, 'ALTO': 0.9, 'BUENO': 0.1}
                 factor_data['Nivel de Riesgo'].append(level_map.get(data['nivel'], 0.5))
-                factor_data['Descripción'].append(data['descripción'])
+                factor_data['Descripcion'].append(data['descripcion'])
             
             # Crear gráfico con matplotlib
             fig, ax = plt.subplots(figsize=(12, 8))
@@ -788,7 +788,7 @@ if st.sidebar.button("🔍 Realizar Análisis", type="primary", use_container_wi
             ax.axvline(x=0.6, color='red', linestyle='--', alpha=0.7, label='Riesgo Alto')
             
             # Añadir etiquetas en las barras
-            for i, (bar, desc) in enumerate(zip(bars, factor_data['Descripción'])):
+            for i, (bar, desc) in enumerate(zip(bars, factor_data['Descripcion'])):
                 width = bar.get_width()
                 ax.text(width + 0.02, bar.get_y() + bar.get_height()/2, 
                        f'{desc}', ha='left', va='center', fontsize=9)
