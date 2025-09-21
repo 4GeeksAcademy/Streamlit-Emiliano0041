@@ -4,7 +4,8 @@ import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
 import seaborn as sns
-import pickle
+import pickle 
+import os
 
 # Configuración de la página
 st.set_page_config(
@@ -109,25 +110,303 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-def load_model():
-    with open('model.pkl', 'rb') as file:
-        model = pickle.load(file)
-    return model
+
+# Función para cargar el modelo y encoders
+@st.cache_resource
+def load_model_and_encoders():
+    """
+    Carga el modelo LightGBM y los label encoders
+    """
+    
+    # Buscar archivos
+    model_files = [f for f in os.listdir('.') if f.endswith('.pkl')]
+    
+    if not model_files:
+        return None, None, "❌ No se encontraron archivos .pkl"
+    
+    model = None
+    encoders = None
+    
+    # Intentar cargar modelo y encoders
+    for file in model_files:
+        try:
+            with open(file, 'rb') as f:
+                loaded_object = pickle.load(f)
+            
+            # Identificar si es modelo o encoders
+            if hasattr(loaded_object, 'predict'):  # Es un modelo
+                model = loaded_object
+                st.info(f"📦 Modelo encontrado en: {file}")
+            elif isinstance(loaded_object, dict):  # Probablemente encoders
+                encoders = loaded_object
+                st.info(f"🔤 Encoders encontrados en: {file}")
+            else:
+                st.info(f"❓ Objeto desconocido en {file}: {type(loaded_object)}")
+                
+        except Exception as e:
+            st.warning(f"⚠️ No se pudo cargar {file}: {e}")
+    
+    # Verificar resultados
+    if model is not None:
+        model_info = f"✅ Modelo LightGBM cargado: {type(model).__name__}"
+        if encoders is not None:
+            model_info += f" + {len(encoders)} encoders"
+        else:
+            model_info += " (sin encoders separados)"
+        return model, encoders, model_info
+    else:
+        return None, None, "❌ No se encontró modelo válido"
+
+def map_streamlit_to_encoder_values(features):
+    """
+    Convierte los valores de la interfaz de Streamlit a los valores que esperan los encoders
+    """
+    mapped_features = features.copy()
+    
+    # Mapear género: Streamlit (0/1) → Encoder ('Male'/'Female')
+    if 'gender' in mapped_features:
+        gender_map = {0: 'Female', 1: 'Male'}
+        mapped_features['gender'] = gender_map[mapped_features['gender']]
+    
+    # Mapear consumo de alcohol: Streamlit (0-20 bebidas/semana) → Encoder ('None'/'Light'/'Moderate'/'Heavy')
+    if 'alcohol_consumption' in mapped_features:
+        alcohol_value = mapped_features['alcohol_consumption']
+        if alcohol_value == 0:
+            mapped_features['alcohol_consumption'] = 'None'
+        elif alcohol_value <= 3:
+            mapped_features['alcohol_consumption'] = 'Light'
+        elif alcohol_value <= 10:
+            mapped_features['alcohol_consumption'] = 'Moderate'
+        else:
+            mapped_features['alcohol_consumption'] = 'Heavy'
+    
+    # Mapear estado de fumador: Streamlit (0/1/2) → Encoder ('Never'/'Former'/'Current')
+    if 'smoking_status' in mapped_features:
+        smoking_map = {0: 'Never', 1: 'Current', 2: 'Former'}
+        mapped_features['smoking_status'] = smoking_map[mapped_features['smoking_status']]
+    
+    # Mapear nivel de actividad física: Streamlit (0-10) → Encoder ('Low'/'Moderate'/'High')
+    if 'physical_activity_level' in mapped_features:
+        activity_value = mapped_features['physical_activity_level']
+        if activity_value <= 3:
+            mapped_features['physical_activity_level'] = 'Low'
+        elif activity_value <= 7:
+            mapped_features['physical_activity_level'] = 'Moderate'
+        else:
+            mapped_features['physical_activity_level'] = 'High'
+    
+    return mapped_features
+
+def apply_label_encoders(features, encoders):
+    """
+    Aplica los label encoders a las características categóricas
+    """
+    if encoders is None:
+        return features
+    
+    # Primero mapear valores de Streamlit a valores de encoder
+    mapped_features = map_streamlit_to_encoder_values(features)
+    encoded_features = mapped_features.copy()
+    
+    # Aplicar encoders
+    for col_name, encoder in encoders.items():
+        if col_name in encoded_features:
+            try:
+                original_value = encoded_features[col_name]
+                
+                # Verificar si el valor está en las clases conocidas
+                if hasattr(encoder, 'classes_') and original_value in encoder.classes_:
+                    encoded_features[col_name] = encoder.transform([original_value])[0]
+                    st.success(f"✅ {col_name}: '{original_value}' → {encoded_features[col_name]}")
+                else:
+                    st.warning(f"⚠️ Valor '{original_value}' no reconocido para {col_name}")
+                    # Usar el primer valor por defecto
+                    if hasattr(encoder, 'classes_') and len(encoder.classes_) > 0:
+                        encoded_features[col_name] = 0
+                
+            except Exception as e:
+                st.error(f"❌ Error al encodificar {col_name}: {e}")
+    
+    return encoded_features
+
+def prepare_features_for_lightgbm(features, encoders=None):
+    """
+    Prepara las características para LightGBM con tus encoders específicos
+    """
+    if encoders is None:
+        st.info("🔢 Modo sin encoders - usando valores numéricos directos")
+        prepared_features = features.copy()
+        
+        # Sin encoders, convertir manualmente según tu lógica original
+        # Esto solo funciona si entrenaste SIN usar los label encoders
+        
+    else:
+        st.info(f"🔤 Aplicando encoders para: {list(encoders.keys())}")
+        
+        # Aplicar tus encoders específicos
+        prepared_features = apply_label_encoders(features, encoders)
+        
+        # Mostrar el mapeo para debug
+        with st.expander("🔍 Ver transformaciones aplicadas"):
+            original_mapped = map_streamlit_to_encoder_values(features)
+            st.write("**Valores originales de Streamlit:**")
+            st.json(features)
+            st.write("**Valores mapeados para encoders:**")
+            st.json(original_mapped)
+            st.write("**Valores finales después de encoding:**")
+            st.json(prepared_features)
+    
+    # Orden de características (debe coincidir con tu entrenamiento)
+    feature_order = [
+        'age', 'gender', 'bmi', 'alcohol_consumption', 'smoking_status',
+        'hepatitis_b', 'hepatitis_c', 'liver_function_score', 
+        'alpha_fetoprotein_level', 'cirrhosis_history', 
+        'family_history_cancer', 'physical_activity_level', 'diabetes'
+    ]
+    
+    # Crear DataFrame con el orden correcto
+    df = pd.DataFrame([prepared_features])[feature_order]
+    
+    return df
+
+def prepare_features_for_model(features):
+    """
+    Prepara las características en el formato correcto para el modelo
+    """
+    # Define el orden exacto de las columnas que espera tu modelo
+    feature_order = [
+        'age', 'gender', 'bmi', 'alcohol_consumption', 'smoking_status',
+        'hepatitis_b', 'hepatitis_c', 'liver_function_score', 
+        'alpha_fetoprotein_level', 'cirrhosis_history', 
+        'family_history_cancer', 'physical_activity_level', 'diabetes'
+    ]
+    
+    # Crear DataFrame con el orden correcto
+    df = pd.DataFrame([features])[feature_order]
+    
+    return df
+
+def calculate_risk_weights(features):
+    """
+    Calcula los pesos de riesgo para el análisis visual
+    (independiente del modelo ML)
+    """
+    risk_weights = {
+        'age_risk': 0.3 if features['age'] > 60 else 0.1 if features['age'] > 45 else 0,
+        'alcohol_risk': 0.25 if features['alcohol_consumption'] > 10 else 0.15 if features['alcohol_consumption'] > 5 else 0,
+        'smoking_risk': 0.3 if features['smoking_status'] == 1 else 0.2 if features['smoking_status'] == 2 else 0,
+        'hepatitis_b_risk': 0.4 if features['hepatitis_b'] == 1 else 0,
+        'hepatitis_c_risk': 0.45 if features['hepatitis_c'] == 1 else 0,
+        'cirrhosis_risk': 0.5 if features['cirrhosis_history'] == 1 else 0,
+        'family_risk': 0.15 if features['family_history_cancer'] == 1 else 0,
+        'afp_risk': 0.35 if features['alpha_fetoprotein_level'] > 20 else 0.2 if features['alpha_fetoprotein_level'] > 10 else 0,
+        'liver_function_risk': 0.25 if features['liver_function_score'] < 5 else 0.15 if features['liver_function_score'] < 8 else 0,
+        'diabetes_risk': 0.1 if features['diabetes'] == 1 else 0,
+        'bmi_risk': 0.1 if features['bmi'] > 30 else 0,
+        'activity_risk': 0.1 if features['physical_activity_level'] < 3 else 0
+    }
+    
+    return risk_weights
 
 def predict_cancer(features):
-    model = load_model()
-    # Convierte a DataFrame con el orden correcto de columnas
-    feature_order = ['age', 'gender', 'bmi', 'alcohol_consumption', 'smoking_status', 
-                    'hepatitis_b', 'hepatitis_c', 'liver_function_score', 
-                    'alpha_fetoprotein_level', 'cirrhosis_history', 
-                    'family_history_cancer', 'physical_activity_level', 'diabetes']
+    """
+    Realiza la predicción usando LightGBM (con o sin encoders)
+    """
+    # Verificar modelo subido por usuario
+    if 'custom_model' in st.session_state and st.session_state['custom_model'] is not None:
+        model = st.session_state['custom_model']
+        encoders = st.session_state.get('custom_encoders', None)
+        model_info = "🎯 Usando modelo subido por el usuario"
+    else:
+        # Cargar modelo y encoders del servidor
+        model, encoders, model_info = load_model_and_encoders()
     
-    df = pd.DataFrame([features])[feature_order]
-    prediction = model.predict(df)[0]
-    probability = model.predict_proba(df)[0][1]
+    # Mostrar información
+    st.info(model_info)
     
-    # Mantén los risk_weights para el análisis visual
-    risk_weights = {...}  # Tu lógica de factores de riesgo
+    if model is not None:
+        try:
+            # Preparar datos (con o sin encoders)
+            model_features = prepare_features_for_lightgbm(features, encoders)
+            
+            # Mostrar datos preparados para debug
+            with st.expander("🔍 Ver datos enviados al modelo"):
+                st.write("Características finales:")
+                st.dataframe(model_features)
+                st.write("Tipos de datos:")
+                st.write(model_features.dtypes)
+            
+            # Hacer predicción con LightGBM
+            prediction_result = model.predict(model_features.values)
+            
+            # Manejar diferentes tipos de salida de LightGBM
+            if hasattr(prediction_result, '__len__') and len(prediction_result) > 0:
+                prediction_value = prediction_result[0]
+            else:
+                prediction_value = prediction_result
+            
+            # Interpretar el resultado
+            if isinstance(prediction_value, (int, np.integer)):
+                # Predicción binaria directa (0 o 1)
+                prediction = int(prediction_value)
+                probability = 0.75 if prediction == 1 else 0.25
+                st.info("📊 Modelo devuelve predicción binaria")
+            else:
+                # Predicción de probabilidad (0.0 a 1.0)
+                probability = float(prediction_value)
+                prediction = int(probability > 0.5)
+                st.info("📊 Modelo devuelve probabilidad")
+            
+            # Obtener probabilidades si están disponibles
+            if hasattr(model, 'predict_proba'):
+                try:
+                    probabilities = model.predict_proba(model_features.values)[0]
+                    if len(probabilities) > 1:
+                        probability = probabilities[1]  # Clase positiva
+                        st.info("✅ Usando predict_proba para probabilidades")
+                except Exception:
+                    pass  # Usar la probabilidad ya calculada
+            
+            # Calcular factores de riesgo para visualización
+            risk_weights = calculate_risk_weights(features)
+            
+            # Mostrar éxito
+            st.success(f"🤖 **Predicción exitosa con LightGBM**")
+            st.success(f"📊 Resultado: {'⚠️ POSITIVO' if prediction == 1 else '✅ NEGATIVO'} (Confianza: {probability:.1%})")
+            
+            return int(prediction), float(probability), risk_weights
+            
+        except Exception as e:
+            st.error(f"❌ Error al usar LightGBM: {str(e)}")
+            
+            # Mostrar información detallada del error
+            import traceback
+            with st.expander("🐛 Ver error completo (para debug)"):
+                st.code(traceback.format_exc())
+                st.write("**Información del modelo:**")
+                if model is not None:
+                    st.write(f"- Tipo: {type(model)}")
+                    if hasattr(model, 'feature_name_'):
+                        st.write(f"- Características esperadas: {model.feature_name_}")
+                    if hasattr(model, 'n_features_'):
+                        st.write(f"- Número de características: {model.n_features_}")
+            
+            st.info("🔄 Continuando con predicción de respaldo...")
+    
+    # Predicción de respaldo
+    st.warning("⚠️ Usando predicción de respaldo basada en factores de riesgo médicos")
+    
+    risk_weights = calculate_risk_weights(features)
+    
+    # Calcular probabilidad basada en factores de riesgo
+    major_risks = risk_weights['hepatitis_b_risk'] + risk_weights['hepatitis_c_risk'] + risk_weights['cirrhosis_risk']
+    moderate_risks = risk_weights['age_risk'] + risk_weights['alcohol_risk'] + risk_weights['smoking_risk'] + risk_weights['afp_risk']
+    minor_risks = risk_weights['family_risk'] + risk_weights['diabetes_risk']
+    
+    probability = (major_risks * 0.6 + moderate_risks * 0.3 + minor_risks * 0.1)
+    probability = min(max(probability, 0.05), 0.90)
+    
+    prediction = int(probability > 0.4)
     
     return prediction, probability, risk_weights
 
@@ -158,6 +437,109 @@ st.markdown('<p class="subtitle">Sistema inteligente para evaluación de riesgo 
 
 # Sidebar para entrada de datos
 st.sidebar.header("📋 Datos del Paciente")
+
+# Sección para cargar modelo
+with st.sidebar.expander("🤖 Configuración del Modelo", expanded=False):
+    st.markdown("### Cargar Modelo LightGBM")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        uploaded_model = st.file_uploader(
+            "Modelo (.pkl)", 
+            type=['pkl'],
+            help="Archivo pickle con tu modelo LightGBM entrenado",
+            key="model_upload"
+        )
+    
+    with col2:
+        uploaded_encoders = st.file_uploader(
+            "Encoders (.pkl)", 
+            type=['pkl'],
+            help="Archivo pickle con tus label encoders",
+            key="encoders_upload"
+        )
+    
+    # Cargar modelo subido
+    if uploaded_model is not None:
+        try:
+            import pickle
+            model = pickle.load(uploaded_model)
+            st.success("✅ Modelo cargado")
+            st.session_state['custom_model'] = model
+        except Exception as e:
+            st.error(f"❌ Error al cargar modelo: {str(e)}")
+            st.session_state['custom_model'] = None
+    
+    # Cargar encoders subidos
+    if uploaded_encoders is not None:
+        try:
+            import pickle
+            encoders = pickle.load(uploaded_encoders)
+            st.success("✅ Encoders cargados")
+            st.session_state['custom_encoders'] = encoders
+            
+            # Mostrar información de los encoders
+            if isinstance(encoders, dict):
+                st.info(f"📝 Encoders para: {list(encoders.keys())}")
+            
+        except Exception as e:
+            st.error(f"❌ Error al cargar encoders: {str(e)}")
+            st.session_state['custom_encoders'] = None
+    
+    if st.button("🔄 Recargar Modelos del Servidor"):
+        st.cache_resource.clear()
+        st.rerun()
+    
+    # Información sobre archivos
+    st.markdown("### 📋 Estructura de tus encoders")
+    with st.expander("Ver información detallada"):
+        st.code("""
+# Tus encoders específicos:
+- gender: 'Male' → 1, 'Female' → 0
+- alcohol_consumption: 'None', 'Light', 'Moderate', 'Heavy'  
+- smoking_status: 'Never', 'Former', 'Current'
+- physical_activity_level: 'Low', 'Moderate', 'High'
+
+# Mapeo automático desde Streamlit:
+- Gender (0/1) → ('Female'/'Male')
+- Alcohol (0-20 bebidas) → ('None'/'Light'/'Moderate'/'Heavy') 
+- Smoking (0/1/2) → ('Never'/'Current'/'Former')
+- Activity (0-10) → ('Low'/'Moderate'/'High')
+        """)
+        
+        st.markdown("### 🔧 Código para recrear tus encoders:")
+        st.code("""
+# Crear encoders exactamente como los tienes
+from sklearn.preprocessing import LabelEncoder
+import pickle
+
+le_dict = {}
+
+# Encoder para género
+le_gender = LabelEncoder()
+le_gender.fit(['Male', 'Female'])
+le_dict['gender'] = le_gender
+
+# Encoder para consumo de alcohol  
+le_alcohol = LabelEncoder()
+le_alcohol.fit(['None', 'Light', 'Moderate', 'Heavy'])
+le_dict['alcohol_consumption'] = le_alcohol
+
+# Encoder para estado de fumador
+le_smoking = LabelEncoder()
+le_smoking.fit(['Never', 'Former', 'Current'])
+le_dict['smoking_status'] = le_smoking
+
+# Encoder para nivel de actividad física
+le_activity = LabelEncoder()
+le_activity.fit(['Low', 'Moderate', 'High'])
+le_dict['physical_activity_level'] = le_activity
+
+# Guardar
+with open("label_encoders.pkl", 'wb') as f:
+    pickle.dump(le_dict, f)
+        """, language="python")
 
 with st.sidebar:
     st.markdown("### 👤 Información Demográfica")
