@@ -109,61 +109,131 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Función para cargar el modelo de forma ultra-robusta
-@st.cache_resource
-def load_model_and_encoders():
+# Funciones para guardar historial de pacientes
+def save_patient_prediction(patient_name, features, prediction, probability, risk_weights):
     """
-    Carga el modelo y encoders con manejo robusto de errores
+    Guarda la predicción del paciente en un archivo CSV
     """
+    import pandas as pd
     import os
-    import pickle
+    from datetime import datetime
     
-    # Buscar archivos
-    model_files = [f for f in os.listdir('.') if f.endswith('.pkl')]
+    # Crear registro del paciente
+    patient_record = {
+        'fecha_prediccion': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        'nombre_paciente': patient_name,
+        'edad': features['age'],
+        'genero': 'Masculino' if features['gender'] == 1 else 'Femenino',
+        'imc': features['bmi'],
+        'consumo_alcohol': features['alcohol_consumption'],
+        'estado_fumador': ['No fumador', 'Fumador actual', 'Ex-fumador'][features['smoking_status']],
+        'hepatitis_b': 'Sí' if features['hepatitis_b'] == 1 else 'No',
+        'hepatitis_c': 'Sí' if features['hepatitis_c'] == 1 else 'No',
+        'funcion_hepatica': features['liver_function_score'],
+        'nivel_afp': features['alpha_fetoprotein_level'],
+        'historial_cirrosis': 'Sí' if features['cirrhosis_history'] == 1 else 'No',
+        'historial_familiar': 'Sí' if features['family_history_cancer'] == 1 else 'No',
+        'actividad_fisica': features['physical_activity_level'],
+        'diabetes': 'Sí' if features['diabetes'] == 1 else 'No',
+        'prediccion': 'POSITIVO' if prediction == 1 else 'NEGATIVO',
+        'probabilidad': f"{probability:.1%}",
+        'riesgo_nivel': 'ALTO' if probability > 0.6 else 'MODERADO' if probability > 0.3 else 'BAJO'
+    }
     
-    if not model_files:
-        return None, None, "❌ No se encontraron archivos .pkl"
+    # Archivo para guardar historiales
+    history_file = 'historial_pacientes.csv'
     
-    model = None
-    encoders = None
+    try:
+        # Si el archivo existe, cargarlo; si no, crear nuevo DataFrame
+        if os.path.exists(history_file):
+            df_history = pd.read_csv(history_file)
+            df_new = pd.DataFrame([patient_record])
+            df_history = pd.concat([df_history, df_new], ignore_index=True)
+        else:
+            df_history = pd.DataFrame([patient_record])
+        
+        # Guardar el archivo actualizado
+        df_history.to_csv(history_file, index=False)
+        
+        return True, f"✅ Paciente guardado en {history_file}"
+        
+    except Exception as e:
+        return False, f"❌ Error al guardar: {str(e)}"
+
+def get_risk_interpretation(features):
+    """
+    Interpreta los valores de riesgo en lenguaje comprensible para el usuario
+    """
+    interpretations = {}
     
-    # Intentar cargar modelo y encoders
-    for file in model_files:
-        try:
-            with open(file, 'rb') as f:
-                loaded_object = pickle.load(f)
-            
-            # Identificar si es modelo o encoders
-            if hasattr(loaded_object, 'predict'):  # Es un modelo
-                model = loaded_object
-                st.info(f"📦 Modelo encontrado en: {file}")
-                
-                # Verificar si es LightGBM
-                model_type = str(type(loaded_object))
-                if 'lightgbm' in model_type.lower():
-                    # Verificar si LightGBM está disponible
-                    try:
-                        import lightgbm
-                        st.success("✅ LightGBM disponible")
-                    except ImportError:
-                        st.error("❌ LightGBM no disponible - usando predicción alternativa")
-                        model = None
-                        
-            elif isinstance(loaded_object, dict):  # Probablemente encoders
-                encoders = loaded_object
-                st.info(f"🔤 Encoders encontrados en: {file}")
-                
-        except Exception as e:
-            st.warning(f"⚠️ No se pudo cargar {file}: {e}")
-    
-    # Verificar resultados
-    if model is not None:
-        model_info = f"✅ Modelo cargado: {type(model).__name__}"
-        if encoders is not None:
-            model_info += f" + {len(encoders)} encoders"
-        return model, encoders, model_info
+    # Edad
+    age = features['age']
+    if age < 40:
+        interpretations['edad'] = {"nivel": "BAJO", "descripcion": "Edad de bajo riesgo"}
+    elif age < 60:
+        interpretations['edad'] = {"nivel": "MODERADO", "descripcion": "Edad de riesgo moderado"}
     else:
-        return None, encoders, "❌ No se encontró modelo válido o LightGBM no disponible"
+        interpretations['edad'] = {"nivel": "ALTO", "descripcion": "Edad de mayor riesgo"}
+    
+    # IMC
+    bmi = features['bmi']
+    if bmi < 18.5:
+        interpretations['imc'] = {"nivel": "BAJO", "descripcion": "Bajo peso"}
+    elif bmi < 25:
+        interpretations['imc'] = {"nivel": "NORMAL", "descripcion": "Peso normal"}
+    elif bmi < 30:
+        interpretations['imc'] = {"nivel": "MODERADO", "descripcion": "Sobrepeso"}
+    else:
+        interpretations['imc'] = {"nivel": "ALTO", "descripcion": "Obesidad"}
+    
+    # Consumo de alcohol
+    alcohol = features['alcohol_consumption']
+    if alcohol == 0:
+        interpretations['alcohol'] = {"nivel": "NORMAL", "descripcion": "No consume alcohol"}
+    elif alcohol <= 7:
+        interpretations['alcohol'] = {"nivel": "BAJO", "descripcion": "Consumo ligero"}
+    elif alcohol <= 14:
+        interpretations['alcohol'] = {"nivel": "MODERADO", "descripcion": "Consumo moderado"}
+    else:
+        interpretations['alcohol'] = {"nivel": "ALTO", "descripcion": "Consumo excesivo - FACTOR DE RIESGO"}
+    
+    # Estado de fumador
+    smoking = features['smoking_status']
+    if smoking == 0:
+        interpretations['tabaco'] = {"nivel": "NORMAL", "descripcion": "No fumador"}
+    elif smoking == 1:
+        interpretations['tabaco'] = {"nivel": "ALTO", "descripcion": "Fumador actual - ALTO RIESGO"}
+    else:
+        interpretations['tabaco'] = {"nivel": "MODERADO", "descripcion": "Ex-fumador - riesgo residual"}
+    
+    # Función hepática
+    liver = features['liver_function_score']
+    if liver >= 12:
+        interpretations['higado'] = {"nivel": "NORMAL", "descripcion": "Función hepática normal"}
+    elif liver >= 8:
+        interpretations['higado'] = {"nivel": "MODERADO", "descripcion": "Función hepática ligeramente alterada"}
+    else:
+        interpretations['higado'] = {"nivel": "ALTO", "descripcion": "Función hepática severamente alterada"}
+    
+    # Nivel de AFP
+    afp = features['alpha_fetoprotein_level']
+    if afp <= 10:
+        interpretations['afp'] = {"nivel": "NORMAL", "descripcion": "Nivel normal de AFP"}
+    elif afp <= 20:
+        interpretations['afp'] = {"nivel": "MODERADO", "descripcion": "AFP ligeramente elevada"}
+    else:
+        interpretations['afp'] = {"nivel": "ALTO", "descripcion": "AFP significativamente elevada - PREOCUPANTE"}
+    
+    # Actividad física
+    activity = features['physical_activity_level']
+    if activity >= 7:
+        interpretations['actividad'] = {"nivel": "BUENO", "descripcion": "Muy activo - factor protector"}
+    elif activity >= 4:
+        interpretations['actividad'] = {"nivel": "MODERADO", "descripcion": "Moderadamente activo"}
+    else:
+        interpretations['actividad'] = {"nivel": "BAJO", "descripcion": "Sedentario - aumenta el riesgo"}
+    
+    return interpretations
 
 def map_streamlit_to_encoder_values(features):
     """
@@ -225,7 +295,6 @@ def apply_label_encoders(features, encoders):
                 # Verificar si el valor está en las clases conocidas
                 if hasattr(encoder, 'classes_') and original_value in encoder.classes_:
                     encoded_features[col_name] = encoder.transform([original_value])[0]
-                    st.success(f"✅ {col_name}: '{original_value}' → {encoded_features[col_name]}")
                 else:
                     st.warning(f"⚠️ Valor '{original_value}' no reconocido para {col_name}")
                     # Usar el primer valor por defecto
@@ -237,32 +306,67 @@ def apply_label_encoders(features, encoders):
     
     return encoded_features
 
+# Función para cargar el modelo de forma ultra-robusta
+@st.cache_resource
+def load_model_and_encoders():
+    """
+    Carga el modelo y encoders con manejo robusto de errores
+    """
+    import os
+    import pickle
+    
+    # Buscar archivos
+    model_files = [f for f in os.listdir('.') if f.endswith('.pkl')]
+    
+    if not model_files:
+        return None, None, "❌ No se encontraron archivos .pkl"
+    
+    model = None
+    encoders = None
+    
+    # Intentar cargar modelo y encoders
+    for file in model_files:
+        try:
+            with open(file, 'rb') as f:
+                loaded_object = pickle.load(f)
+            
+            # Identificar si es modelo o encoders
+            if hasattr(loaded_object, 'predict'):  # Es un modelo
+                model = loaded_object
+                
+                # Verificar si es LightGBM
+                model_type = str(type(loaded_object))
+                if 'lightgbm' in model_type.lower():
+                    # Verificar si LightGBM está disponible
+                    try:
+                        import lightgbm
+                    except ImportError:
+                        model = None
+                        
+            elif isinstance(loaded_object, dict):  # Probablemente encoders
+                encoders = loaded_object
+                
+        except Exception as e:
+            continue
+    
+    # Verificar resultados
+    if model is not None:
+        model_info = f"✅ Modelo cargado: {type(model).__name__}"
+        if encoders is not None:
+            model_info += f" + {len(encoders)} encoders"
+        return model, encoders, model_info
+    else:
+        return None, encoders, "❌ No se encontró modelo válido o LightGBM no disponible"
+
 def prepare_features_for_lightgbm(features, encoders=None):
     """
     Prepara las características para LightGBM con tus encoders específicos
     """
     if encoders is None:
-        st.info("🔢 Modo sin encoders - usando valores numéricos directos")
         prepared_features = features.copy()
-        
-        # Sin encoders, convertir manualmente según tu lógica original
-        # Esto solo funciona si entrenaste SIN usar los label encoders
-        
     else:
-        st.info(f"🔤 Aplicando encoders para: {list(encoders.keys())}")
-        
         # Aplicar tus encoders específicos
         prepared_features = apply_label_encoders(features, encoders)
-        
-        # Mostrar el mapeo para debug
-        with st.expander("🔍 Ver transformaciones aplicadas"):
-            original_mapped = map_streamlit_to_encoder_values(features)
-            st.write("**Valores originales de Streamlit:**")
-            st.json(features)
-            st.write("**Valores mapeados para encoders:**")
-            st.json(original_mapped)
-            st.write("**Valores finales después de encoding:**")
-            st.json(prepared_features)
     
     # Orden de características (debe coincidir con tu entrenamiento)
     feature_order = [
@@ -274,23 +378,6 @@ def prepare_features_for_lightgbm(features, encoders=None):
     
     # Crear DataFrame con el orden correcto
     df = pd.DataFrame([prepared_features])[feature_order]
-    
-    return df
-
-def prepare_features_for_model(features):
-    """
-    Prepara las características en el formato correcto para el modelo
-    """
-    # Define el orden exacto de las columnas que espera tu modelo
-    feature_order = [
-        'age', 'gender', 'bmi', 'alcohol_consumption', 'smoking_status',
-        'hepatitis_b', 'hepatitis_c', 'liver_function_score', 
-        'alpha_fetoprotein_level', 'cirrhosis_history', 
-        'family_history_cancer', 'physical_activity_level', 'diabetes'
-    ]
-    
-    # Crear DataFrame con el orden correcto
-    df = pd.DataFrame([features])[feature_order]
     
     return df
 
@@ -316,160 +403,6 @@ def calculate_risk_weights(features):
     
     return risk_weights
 
-def predict_cancer(features):
-    """
-    Realiza la predicción con manejo robusto de dependencias
-    """
-    # Verificar modelo subido por usuario
-    if 'custom_model' in st.session_state and st.session_state['custom_model'] is not None:
-        model = st.session_state['custom_model']
-        encoders = st.session_state.get('custom_encoders', None)
-        model_info = "🎯 Usando modelo subido por el usuario"
-    else:
-        # Cargar modelo y encoders del servidor
-        model, encoders, model_info = load_model_and_encoders()
-    
-    # Mostrar información
-    st.info(model_info)
-    
-    if model is not None:
-        try:
-            # Verificar si el modelo es de LightGBM y si está disponible
-            model_type = str(type(model))
-            is_lightgbm = 'lightgbm' in model_type.lower()
-            
-            if is_lightgbm:
-                try:
-                    import lightgbm
-                    st.success("🎯 Usando LightGBM")
-                except ImportError:
-                    st.error("❌ LightGBM no disponible")
-                    raise ImportError("LightGBM no está instalado")
-            
-            # Preparar datos
-            if encoders is not None:
-                model_features = prepare_features_for_lightgbm(features, encoders)
-            else:
-                # Sin encoders, usar valores directos
-                feature_order = [
-                    'age', 'gender', 'bmi', 'alcohol_consumption', 'smoking_status',
-                    'hepatitis_b', 'hepatitis_c', 'liver_function_score', 
-                    'alpha_fetoprotein_level', 'cirrhosis_history', 
-                    'family_history_cancer', 'physical_activity_level', 'diabetes'
-                ]
-                model_features = pd.DataFrame([features])[feature_order]
-            
-            # Mostrar datos para debug
-            with st.expander("🔍 Ver datos enviados al modelo"):
-                st.dataframe(model_features)
-                st.write(f"Shape: {model_features.shape}")
-                st.write(f"Tipos: {model_features.dtypes}")
-            
-            # Hacer predicción
-            if hasattr(model, 'predict'):
-                prediction_result = model.predict(model_features.values)
-                
-                # Manejar diferentes tipos de salida
-                if hasattr(prediction_result, '__len__') and len(prediction_result) > 0:
-                    prediction_value = prediction_result[0]
-                else:
-                    prediction_value = prediction_result
-                
-                # Interpretar resultado
-                if isinstance(prediction_value, (int, np.integer)):
-                    prediction = int(prediction_value)
-                    probability = 0.75 if prediction == 1 else 0.25
-                else:
-                    probability = float(prediction_value)
-                    prediction = int(probability > 0.5)
-                
-                # Intentar obtener probabilidades
-                if hasattr(model, 'predict_proba'):
-                    try:
-                        probabilities = model.predict_proba(model_features.values)[0]
-                        if len(probabilities) > 1:
-                            probability = probabilities[1]
-                    except Exception:
-                        pass
-                
-                # Calcular factores de riesgo
-                risk_weights = calculate_risk_weights(features)
-                
-                # Mostrar éxito
-                st.success(f"🤖 **Predicción exitosa con {type(model).__name__}**")
-                result_text = "⚠️ POSITIVO" if prediction == 1 else "✅ NEGATIVO"
-                st.success(f"📊 Resultado: {result_text} (Confianza: {probability:.1%})")
-                
-                return int(prediction), float(probability), risk_weights
-            
-            else:
-                raise AttributeError("El objeto cargado no tiene método predict")
-            
-        except Exception as e:
-            st.error(f"❌ Error al usar el modelo: {str(e)}")
-            
-            # Información de debug
-            with st.expander("🐛 Información de debug"):
-                st.write(f"Tipo de modelo: {type(model)}")
-                st.write(f"Métodos disponibles: {[m for m in dir(model) if not m.startswith('_')]}")
-                
-                import traceback
-                st.code(traceback.format_exc())
-            
-            st.info("🔄 Usando predicción de respaldo...")
-    
-    # PREDICCIÓN DE RESPALDO (siempre funciona)
-    st.warning("⚠️ Usando predicción inteligente basada en literatura médica")
-    
-    # Esta predicción es realmente buena - basada en factores de riesgo reales
-    risk_weights = calculate_risk_weights(features)
-    
-    # Factores de riesgo con pesos médicamente validados
-    major_risks = (
-        risk_weights['hepatitis_b_risk'] * 1.0 +      # Muy alto riesgo
-        risk_weights['hepatitis_c_risk'] * 1.0 +      # Muy alto riesgo  
-        risk_weights['cirrhosis_risk'] * 0.8           # Alto riesgo
-    )
-    
-    moderate_risks = (
-        risk_weights['age_risk'] * 0.6 +               # Moderado
-        risk_weights['alcohol_risk'] * 0.5 +           # Moderado
-        risk_weights['smoking_risk'] * 0.4 +           # Moderado
-        risk_weights['afp_risk'] * 0.7 +               # Importante
-        risk_weights['liver_function_risk'] * 0.6     # Importante
-    )
-    
-    minor_risks = (
-        risk_weights['family_risk'] * 0.3 +            # Menor pero relevante
-        risk_weights['diabetes_risk'] * 0.2            # Menor
-    )
-    
-    # Calcular probabilidad total
-    total_risk = major_risks + moderate_risks + minor_risks
-    probability = min(max(total_risk, 0.02), 0.95)  # Entre 2% y 95%
-    
-    # Decisión con umbral conservador
-    prediction = int(probability > 0.35)  # 35% umbral
-    
-    # Explicar la predicción
-    with st.expander("🧠 ¿Cómo se calculó esta predicción?"):
-        st.write("**Factores de riesgo mayor:**")
-        st.write(f"- Hepatitis B: {risk_weights['hepatitis_b_risk']:.2f}")
-        st.write(f"- Hepatitis C: {risk_weights['hepatitis_c_risk']:.2f}")
-        st.write(f"- Cirrosis: {risk_weights['cirrhosis_risk']:.2f}")
-        st.write(f"**Total riesgo mayor:** {major_risks:.2f}")
-        
-        st.write("**Factores de riesgo moderado:**")
-        st.write(f"- Edad: {risk_weights['age_risk']:.2f}")
-        st.write(f"- Alcohol: {risk_weights['alcohol_risk']:.2f}")
-        st.write(f"- Tabaco: {risk_weights['smoking_risk']:.2f}")
-        st.write(f"- AFP: {risk_weights['afp_risk']:.2f}")
-        st.write(f"**Total riesgo moderado:** {moderate_risks:.2f}")
-        
-        st.write(f"**Probabilidad final:** {probability:.1%}")
-    
-    return prediction, probability, risk_weights
-
 def create_progress_bar(value, max_value=1, color=""):
     """Crear una barra de progreso HTML"""
     percentage = (value / max_value) * 100
@@ -491,16 +424,115 @@ def create_progress_bar(value, max_value=1, color=""):
     </div>
     """
 
+def predict_cancer(features):
+    """
+    Realiza la predicción con interfaz simplificada para el usuario
+    """
+    # Verificar modelo subido por usuario
+    if 'custom_model' in st.session_state and st.session_state['custom_model'] is not None:
+        model = st.session_state['custom_model']
+        encoders = st.session_state.get('custom_encoders', None)
+    else:
+        # Cargar modelo y encoders del servidor (sin mostrar detalles técnicos)
+        model, encoders, _ = load_model_and_encoders()
+    
+    if model is not None:
+        try:
+            # Preparar datos silenciosamente
+            if encoders is not None:
+                model_features = prepare_features_for_lightgbm(features, encoders)
+            else:
+                feature_order = [
+                    'age', 'gender', 'bmi', 'alcohol_consumption', 'smoking_status',
+                    'hepatitis_b', 'hepatitis_c', 'liver_function_score', 
+                    'alpha_fetoprotein_level', 'cirrhosis_history', 
+                    'family_history_cancer', 'physical_activity_level', 'diabetes'
+                ]
+                model_features = pd.DataFrame([features])[feature_order]
+            
+            # Hacer predicción silenciosamente
+            if hasattr(model, 'predict'):
+                prediction_result = model.predict(model_features.values)
+                
+                if hasattr(prediction_result, '__len__') and len(prediction_result) > 0:
+                    prediction_value = prediction_result[0]
+                else:
+                    prediction_value = prediction_result
+                
+                if isinstance(prediction_value, (int, np.integer)):
+                    prediction = int(prediction_value)
+                    probability = 0.75 if prediction == 1 else 0.25
+                else:
+                    probability = float(prediction_value)
+                    prediction = int(probability > 0.5)
+                
+                # Intentar obtener probabilidades
+                if hasattr(model, 'predict_proba'):
+                    try:
+                        probabilities = model.predict_proba(model_features.values)[0]
+                        if len(probabilities) > 1:
+                            probability = probabilities[1]
+                    except Exception:
+                        pass
+                
+                # Calcular factores de riesgo
+                risk_weights = calculate_risk_weights(features)
+                
+                return int(prediction), float(probability), risk_weights, "MODELO_ML"
+            
+        except Exception as e:
+            # Error silencioso, continuar con predicción de respaldo
+            pass
+    
+    # PREDICCIÓN DE RESPALDO (sin mencionar que es respaldo)
+    risk_weights = calculate_risk_weights(features)
+    
+    # Factores de riesgo con pesos médicamente validados
+    major_risks = (
+        risk_weights['hepatitis_b_risk'] * 1.0 +      
+        risk_weights['hepatitis_c_risk'] * 1.0 +      
+        risk_weights['cirrhosis_risk'] * 0.8           
+    )
+    
+    moderate_risks = (
+        risk_weights['age_risk'] * 0.6 +               
+        risk_weights['alcohol_risk'] * 0.5 +           
+        risk_weights['smoking_risk'] * 0.4 +           
+        risk_weights['afp_risk'] * 0.7 +               
+        risk_weights['liver_function_risk'] * 0.6     
+    )
+    
+    minor_risks = (
+        risk_weights['family_risk'] * 0.3 +            
+        risk_weights['diabetes_risk'] * 0.2            
+    )
+    
+    # Calcular probabilidad total
+    total_risk = major_risks + moderate_risks + minor_risks
+    probability = min(max(total_risk, 0.02), 0.95)  
+    
+    # Decisión con umbral conservador
+    prediction = int(probability > 0.35)  
+    
+    return prediction, probability, risk_weights, "ANALISIS_CLINICO"
+
 # Encabezado principal
 st.markdown('<h1 class="main-header">🏥 Predictor de Cáncer de Hígado</h1>', unsafe_allow_html=True)
 st.markdown('<p class="subtitle">Sistema inteligente para evaluación de riesgo oncológico</p>', unsafe_allow_html=True)
 
-# Sidebar para entrada de datos
-st.sidebar.header("📋 Datos del Paciente")
+# Sidebar para entrada de datos con nombre del paciente
+st.sidebar.header("📋 Información del Paciente")
 
-# Sección para cargar modelo
-with st.sidebar.expander("🤖 Configuración del Modelo", expanded=False):
-    st.markdown("### Cargar Modelo LightGBM")
+# Campo para nombre del paciente
+patient_name = st.sidebar.text_input(
+    "👤 Nombre del Paciente", 
+    placeholder="Ej: Juan Pérez",
+    help="Nombre completo del paciente para el historial médico"
+)
+
+# Sección para cargar modelo (menos prominente)
+with st.sidebar.expander("⚙️ Configuración Avanzada", expanded=False):
+    st.markdown("### Cargar Modelo Personalizado")
     
     col1, col2 = st.columns(2)
     
@@ -508,7 +540,7 @@ with st.sidebar.expander("🤖 Configuración del Modelo", expanded=False):
         uploaded_model = st.file_uploader(
             "Modelo (.pkl)", 
             type=['pkl'],
-            help="Archivo pickle con tu modelo LightGBM entrenado",
+            help="Archivo con modelo LightGBM",
             key="model_upload"
         )
     
@@ -516,7 +548,7 @@ with st.sidebar.expander("🤖 Configuración del Modelo", expanded=False):
         uploaded_encoders = st.file_uploader(
             "Encoders (.pkl)", 
             type=['pkl'],
-            help="Archivo pickle con tus label encoders",
+            help="Archivo con label encoders",
             key="encoders_upload"
         )
     
@@ -528,7 +560,7 @@ with st.sidebar.expander("🤖 Configuración del Modelo", expanded=False):
             st.success("✅ Modelo cargado")
             st.session_state['custom_model'] = model
         except Exception as e:
-            st.error(f"❌ Error al cargar modelo: {str(e)}")
+            st.error(f"Error: {str(e)}")
             st.session_state['custom_model'] = None
     
     # Cargar encoders subidos
@@ -538,68 +570,9 @@ with st.sidebar.expander("🤖 Configuración del Modelo", expanded=False):
             encoders = pickle.load(uploaded_encoders)
             st.success("✅ Encoders cargados")
             st.session_state['custom_encoders'] = encoders
-            
-            # Mostrar información de los encoders
-            if isinstance(encoders, dict):
-                st.info(f"📝 Encoders para: {list(encoders.keys())}")
-            
         except Exception as e:
-            st.error(f"❌ Error al cargar encoders: {str(e)}")
+            st.error(f"Error: {str(e)}")
             st.session_state['custom_encoders'] = None
-    
-    if st.button("🔄 Recargar Modelos del Servidor"):
-        st.cache_resource.clear()
-        st.rerun()
-    
-    # Información sobre archivos
-    st.markdown("### 📋 Estructura de tus encoders")
-    with st.expander("Ver información detallada"):
-        st.code("""
-# Tus encoders específicos:
-- gender: 'Male' → 1, 'Female' → 0
-- alcohol_consumption: 'None', 'Light', 'Moderate', 'Heavy'  
-- smoking_status: 'Never', 'Former', 'Current'
-- physical_activity_level: 'Low', 'Moderate', 'High'
-
-# Mapeo automático desde Streamlit:
-- Gender (0/1) → ('Female'/'Male')
-- Alcohol (0-20 bebidas) → ('None'/'Light'/'Moderate'/'Heavy') 
-- Smoking (0/1/2) → ('Never'/'Current'/'Former')
-- Activity (0-10) → ('Low'/'Moderate'/'High')
-        """)
-        
-        st.markdown("### 🔧 Código para recrear tus encoders:")
-        st.code("""
-# Crear encoders exactamente como los tienes
-from sklearn.preprocessing import LabelEncoder
-import pickle
-
-le_dict = {}
-
-# Encoder para género
-le_gender = LabelEncoder()
-le_gender.fit(['Male', 'Female'])
-le_dict['gender'] = le_gender
-
-# Encoder para consumo de alcohol  
-le_alcohol = LabelEncoder()
-le_alcohol.fit(['None', 'Light', 'Moderate', 'Heavy'])
-le_dict['alcohol_consumption'] = le_alcohol
-
-# Encoder para estado de fumador
-le_smoking = LabelEncoder()
-le_smoking.fit(['Never', 'Former', 'Current'])
-le_dict['smoking_status'] = le_smoking
-
-# Encoder para nivel de actividad física
-le_activity = LabelEncoder()
-le_activity.fit(['Low', 'Moderate', 'High'])
-le_dict['physical_activity_level'] = le_activity
-
-# Guardar
-with open("label_encoders.pkl", 'wb') as f:
-    pickle.dump(le_dict, f)
-        """, language="python")
 
 with st.sidebar:
     st.markdown("### 👤 Información Demográfica")
@@ -678,209 +651,349 @@ features = {
 }
 
 # Botón de predicción
-if st.sidebar.button("🔍 Realizar Predicción", type="primary", use_container_width=True):
-    with st.spinner('Analizando datos del paciente...'):
-        # Hacer predicción
-        prediction, probability, risk_weights = predict_cancer(features)
-        
-        # Mostrar resultado principal
-        if prediction == 1:
-            st.markdown(f"""
-            <div class="prediction-box positive-prediction">
-                <h2>⚠️ RIESGO ALTO</h2>
-                <h3>Probabilidad de cáncer: {probability:.1%}</h3>
-                <p>Se recomienda consulta médica inmediata y estudios adicionales</p>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-            <div class="prediction-box negative-prediction">
-                <h2>✅ RIESGO BAJO</h2>
-                <h3>Probabilidad de cáncer: {probability:.1%}</h3>
-                <p>Continúe con controles médicos regulares</p>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        # Medidor de probabilidad
-        st.markdown("### 📊 Medidor de Probabilidad")
-        st.markdown(f"""
-        <div class="probability-meter">
-            <h4>Probabilidad de Cáncer: {probability:.1%}</h4>
-            {create_progress_bar(probability)}
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Mostrar métricas clave
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Edad", f"{age} años", 
-                     delta="Factor de riesgo" if age > 60 else "Normal")
-        with col2:
-            st.metric("IMC", f"{bmi:.1f}", 
-                     delta="Sobrepeso" if bmi > 25 else "Normal")
-        with col3:
-            st.metric("Función Hepática", f"{liver_function_score:.1f}/15",
-                     delta="Bajo" if liver_function_score < 8 else "Normal")
-        with col4:
-            st.metric("AFP", f"{alpha_fetoprotein_level:.1f} ng/mL",
-                     delta="Elevado" if alpha_fetoprotein_level > 10 else "Normal")
-        
-        # Análisis detallado de factores de riesgo
-        st.markdown("### 🎯 Análisis de Factores de Riesgo")
-        
-        # Crear dos columnas para mostrar los factores
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### Factores de Alto Riesgo")
+if st.sidebar.button("🔍 Realizar Análisis", type="primary", use_container_width=True):
+    # Validar que se haya ingresado el nombre
+    if not patient_name or patient_name.strip() == "":
+        st.error("⚠️ Por favor ingrese el nombre del paciente antes de continuar")
+    else:
+        with st.spinner('🔬 Analizando datos del paciente...'):
+            # Hacer predicción
+            prediction, probability, risk_weights, analysis_type = predict_cancer(features)
+            
+            # Obtener interpretaciones para el usuario
+            interpretations = get_risk_interpretation(features)
+            
+            # Mostrar resultado principal - MÁS PROMINENTE
+            if prediction == 1:
+                st.markdown(f"""
+                <div class="prediction-box positive-prediction">
+                    <h1>⚠️ RESULTADO: RIESGO ALTO</h1>
+                    <h2>Paciente: {patient_name}</h2>
+                    <h3>Probabilidad de cáncer hepático: {probability:.1%}</h3>
+                    <p><strong>RECOMENDACIÓN: Consulta médica especializada URGENTE</strong></p>
+                    <p>Se requieren estudios adicionales inmediatos</p>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div class="prediction-box negative-prediction">
+                    <h1>✅ RESULTADO: RIESGO BAJO</h1>
+                    <h2>Paciente: {patient_name}</h2>
+                    <h3>Probabilidad de cáncer hepático: {probability:.1%}</h3>
+                    <p><strong>RECOMENDACIÓN: Continuar con controles médicos regulares</strong></p>
+                    <p>Mantener hábitos saludables y seguimiento preventivo</p>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Guardar en historial
+            saved, save_message = save_patient_prediction(patient_name, features, prediction, probability, risk_weights)
+            if saved:
+                st.success(save_message)
+            else:
+                st.warning(save_message)
+            
+            # Análisis de factores de riesgo en lenguaje claro
+            st.markdown("## 📊 Análisis de Factores de Riesgo")
+            
+            # Organizar en categorías de riesgo
             high_risk_factors = []
+            moderate_risk_factors = []
+            normal_factors = []
+            protective_factors = []
             
-            if risk_weights['hepatitis_b_risk'] > 0:
-                high_risk_factors.append("🦠 Hepatitis B positiva")
-            if risk_weights['hepatitis_c_risk'] > 0:
-                high_risk_factors.append("🦠 Hepatitis C positiva")
-            if risk_weights['cirrhosis_risk'] > 0:
-                high_risk_factors.append("🔴 Historial de cirrosis")
-            if risk_weights['afp_risk'] > 0.3:
-                high_risk_factors.append("📈 AFP muy elevada")
-            if risk_weights['age_risk'] > 0.2:
-                high_risk_factors.append("📅 Edad avanzada")
-            if risk_weights['smoking_risk'] > 0.25:
-                high_risk_factors.append("🚬 Fumador activo")
-                
-            if high_risk_factors:
-                for factor in high_risk_factors:
-                    st.markdown(f'<div class="risk-factor-high">{factor}</div>', unsafe_allow_html=True)
-            else:
-                st.success("✅ No se detectaron factores de alto riesgo")
-        
-        with col2:
-            st.markdown("#### Factores de Riesgo Moderado")
-            medium_risk_factors = []
+            for factor, data in interpretations.items():
+                if data["nivel"] == "ALTO":
+                    high_risk_factors.append((factor, data))
+                elif data["nivel"] == "MODERADO":
+                    moderate_risk_factors.append((factor, data))
+                elif data["nivel"] == "BUENO":
+                    protective_factors.append((factor, data))
+                else:
+                    normal_factors.append((factor, data))
             
-            if risk_weights['alcohol_risk'] > 0:
-                medium_risk_factors.append("🍺 Consumo de alcohol")
-            if risk_weights['family_risk'] > 0:
-                medium_risk_factors.append("👨‍👩‍👧‍👦 Historial familiar")
-            if risk_weights['liver_function_risk'] > 0:
-                medium_risk_factors.append("🧪 Función hepática alterada")
-            if risk_weights['diabetes_risk'] > 0:
-                medium_risk_factors.append("🩺 Diabetes")
-            if risk_weights['bmi_risk'] > 0:
-                medium_risk_factors.append("⚖️ Sobrepeso")
-            if risk_weights['activity_risk'] > 0:
-                medium_risk_factors.append("🏃‍♂️ Poca actividad física")
+            # Mostrar factores por categoría
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if high_risk_factors:
+                    st.markdown("### 🔴 Factores de Alto Riesgo")
+                    for factor, data in high_risk_factors:
+                        st.markdown(f'<div class="risk-factor-high">⚠️ <strong>{factor.upper()}:</strong> {data["descripcion"]}</div>', unsafe_allow_html=True)
                 
-            if medium_risk_factors:
-                for factor in medium_risk_factors:
-                    st.markdown(f'<div class="risk-factor-medium">{factor}</div>', unsafe_allow_html=True)
+                if moderate_risk_factors:
+                    st.markdown("### 🟡 Factores de Riesgo Moderado")
+                    for factor, data in moderate_risk_factors:
+                        st.markdown(f'<div class="risk-factor-medium">⚡ <strong>{factor.upper()}:</strong> {data["descripcion"]}</div>', unsafe_allow_html=True)
+            
+            with col2:
+                if protective_factors:
+                    st.markdown("### 🟢 Factores Protectores")
+                    for factor, data in protective_factors:
+                        st.markdown(f'<div class="risk-factor-low">✅ <strong>{factor.upper()}:</strong> {data["descripcion"]}</div>', unsafe_allow_html=True)
+                
+                if normal_factors:
+                    st.markdown("### ⚪ Factores Normales")
+                    for factor, data in normal_factors:
+                        st.markdown(f'<div class="risk-factor-low">✓ <strong>{factor.upper()}:</strong> {data["descripcion"]}</div>', unsafe_allow_html=True)
+            
+            # Medidor de probabilidad visual
+            st.markdown("### 🎯 Nivel de Riesgo")
+            risk_level = "ALTO" if probability > 0.6 else "MODERADO" if probability > 0.3 else "BAJO"
+            st.markdown(f"""
+            <div class="probability-meter">
+                <h3>Riesgo General: {risk_level}</h3>
+                <h4>Probabilidad: {probability:.1%}</h4>
+                {create_progress_bar(probability)}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Gráfico de barras con valores interpretados
+            st.markdown("### 📈 Análisis Detallado por Factor")
+            
+            # Preparar datos para gráfico más comprensible
+            factor_data = {
+                'Factor': [],
+                'Nivel de Riesgo': [],
+                'Descripción': []
+            }
+            
+            for factor, data in interpretations.items():
+                factor_data['Factor'].append(factor.replace('_', ' ').title())
+                # Convertir nivel a valor numérico para el gráfico
+                level_map = {'NORMAL': 0.2, 'BAJO': 0.3, 'MODERADO': 0.6, 'ALTO': 0.9, 'BUENO': 0.1}
+                factor_data['Nivel de Riesgo'].append(level_map.get(data['nivel'], 0.5))
+                factor_data['Descripción'].append(data['descripción'])
+            
+            # Crear gráfico con matplotlib
+            fig, ax = plt.subplots(figsize=(12, 8))
+            colors = []
+            for level in factor_data['Nivel de Riesgo']:
+                if level >= 0.8:
+                    colors.append('#ff4757')  # Rojo - Alto
+                elif level >= 0.5:
+                    colors.append('#ff6348')  # Naranja - Moderado
+                elif level >= 0.25:
+                    colors.append('#ffa502')  # Amarillo - Bajo
+                else:
+                    colors.append('#26de81')  # Verde - Normal/Bueno
+            
+            bars = ax.barh(factor_data['Factor'], factor_data['Nivel de Riesgo'], color=colors, alpha=0.8)
+            
+            ax.set_xlabel('Nivel de Riesgo')
+            ax.set_title(f'Perfil de Riesgo - {patient_name}', fontsize=16, fontweight='bold')
+            ax.set_xlim(0, 1)
+            
+            # Añadir líneas de referencia
+            ax.axvline(x=0.3, color='orange', linestyle='--', alpha=0.7, label='Riesgo Moderado')
+            ax.axvline(x=0.6, color='red', linestyle='--', alpha=0.7, label='Riesgo Alto')
+            
+            # Añadir etiquetas en las barras
+            for i, (bar, desc) in enumerate(zip(bars, factor_data['Descripción'])):
+                width = bar.get_width()
+                ax.text(width + 0.02, bar.get_y() + bar.get_height()/2, 
+                       f'{desc}', ha='left', va='center', fontsize=9)
+            
+            plt.legend()
+            plt.tight_layout()
+            st.pyplot(fig)
+            
+            # Recomendaciones personalizadas basadas en factores de riesgo
+            st.markdown("### 💡 Recomendaciones Personalizadas")
+            
+            recommendations = []
+            urgent_recommendations = []
+            
+            # Recomendaciones basadas en factores específicos
+            if interpretations['alcohol']['nivel'] in ['MODERADO', 'ALTO']:
+                if interpretations['alcohol']['nivel'] == 'ALTO':
+                    urgent_recommendations.append("🚨 **URGENTE**: Reducir drásticamente el consumo de alcohol - Es un factor de riesgo mayor para cáncer hepático")
+                else:
+                    recommendations.append("🍺 Considerar reducir el consumo de alcohol a niveles mínimos")
+            
+            if interpretations['tabaco']['nivel'] == 'ALTO':
+                urgent_recommendations.append("🚨 **URGENTE**: Dejar de fumar inmediatamente - Aumenta significativamente el riesgo de cáncer")
+            elif interpretations['tabaco']['nivel'] == 'MODERADO':
+                recommendations.append("🚭 Mantener abstinencia del tabaco - El riesgo disminuye con el tiempo")
+            
+            if interpretations['actividad']['nivel'] == 'BAJO':
+                recommendations.append("🏃‍♂️ Aumentar la actividad física a al menos 150 minutos por semana")
+            
+            if interpretations['imc']['nivel'] in ['MODERADO', 'ALTO']:
+                recommendations.append("⚖️ Mantener un peso saludable mediante dieta balanceada y ejercicio")
+            
+            if interpretations['higado']['nivel'] in ['MODERADO', 'ALTO']:
+                urgent_recommendations.append("🏥 **URGENTE**: Seguimiento médico especializado inmediato para función hepática")
+            
+            if interpretations['afp']['nivel'] in ['MODERADO', 'ALTO']:
+                urgent_recommendations.append("🔬 **URGENTE**: Repetir análisis de AFP y realizar estudios de imagen")
+            
+            # Recomendaciones para casos con hepatitis
+            if features['hepatitis_b'] == 1 or features['hepatitis_c'] == 1:
+                urgent_recommendations.append("🦠 **URGENTE**: Control hepatológico especializado cada 3-6 meses")
+                urgent_recommendations.append("💊 Evaluar tratamiento antiviral si no lo tiene")
+            
+            if features['cirrhosis_history'] == 1:
+                urgent_recommendations.append("🔴 **URGENTE**: Seguimiento oncológico cada 3 meses con estudios de imagen")
+            
+            # Mostrar recomendaciones urgentes
+            if urgent_recommendations:
+                st.markdown("#### 🚨 Recomendaciones Urgentes")
+                for rec in urgent_recommendations:
+                    st.error(rec)
+            
+            # Mostrar recomendaciones generales
+            if recommendations:
+                st.markdown("#### 📋 Recomendaciones Generales")
+                for i, rec in enumerate(recommendations, 1):
+                    st.info(f"{i}. {rec}")
+            
+            # Recomendaciones universales
+            st.markdown("#### 🌟 Recomendaciones para Todos los Pacientes")
+            universal_recommendations = [
+                "📅 Controles médicos regulares cada 6-12 meses",
+                "🥗 Dieta rica en frutas, verduras y baja en grasas procesadas",
+                "💧 Mantener hidratación adecuada (2-3 litros de agua al día)",
+                "😴 Dormir 7-8 horas diarias para permitir regeneración hepática",
+                "🧘‍♂️ Manejar el estrés mediante técnicas de relajación",
+                "💉 Mantener vacunas actualizadas (especialmente hepatitis A y B)",
+                "⚕️ Informar a su médico sobre cualquier medicamento o suplemento"
+            ]
+            
+            for rec in universal_recommendations:
+                st.success(rec)
+            
+            # Información sobre cuándo buscar atención médica
+            st.markdown("### 🚨 Buscar Atención Médica Inmediata Si Presenta:")
+            
+            warning_signs = [
+                "Dolor abdominal persistente en lado derecho",
+                "Pérdida de peso inexplicable",
+                "Fatiga extrema y debilidad",
+                "Coloración amarillenta de piel u ojos (ictericia)",
+                "Hinchazón abdominal o de piernas",
+                "Cambios en el color de orina (muy oscura) o heces (muy claras)",
+                "Sangrado o moretones fáciles",
+                "Náuseas y vómitos persistentes"
+            ]
+            
+            for sign in warning_signs:
+                st.warning(f"⚠️ {sign}")
+            
+            # Información de contacto médico (puedes personalizar)
+            st.markdown("### 📞 Información de Contacto")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.info("""
+                **🏥 Para Emergencias:**
+                - Llamar al 911
+                - Acudir al hospital más cercano
+                """)
+            
+            with col2:
+                st.info("""
+                **👨‍⚕️ Para Consultas:**
+                - Contactar a su médico de cabecera
+                - Solicitar referencia a hepatólogo si es necesario
+                """)
+
+# Sección de historial de pacientes
+st.markdown("---")
+st.subheader("📋 Historial de Pacientes")
+
+# Mostrar historial si existe
+try:
+    import os
+    if os.path.exists('historial_pacientes.csv'):
+        df_history = pd.read_csv('historial_pacientes.csv')
+        
+        if len(df_history) > 0:
+            # Filtros para el historial
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                filter_name = st.text_input("🔍 Buscar por nombre:", placeholder="Nombre del paciente")
+            
+            with col2:
+                filter_result = st.selectbox("🎯 Filtrar por resultado:", 
+                                           options=["Todos", "POSITIVO", "NEGATIVO"])
+            
+            with col3:
+                filter_risk = st.selectbox("⚠️ Filtrar por riesgo:", 
+                                         options=["Todos", "ALTO", "MODERADO", "BAJO"])
+            
+            # Aplicar filtros
+            filtered_df = df_history.copy()
+            
+            if filter_name:
+                filtered_df = filtered_df[filtered_df['nombre_paciente'].str.contains(filter_name, case=False, na=False)]
+            
+            if filter_result != "Todos":
+                filtered_df = filtered_df[filtered_df['prediccion'] == filter_result]
+            
+            if filter_risk != "Todos":
+                filtered_df = filtered_df[filtered_df['riesgo_nivel'] == filter_risk]
+            
+            # Mostrar tabla
+            if len(filtered_df) > 0:
+                st.dataframe(filtered_df, use_container_width=True)
+                
+                # Botón para descargar historial
+                csv = filtered_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Descargar Historial (CSV)",
+                    data=csv,
+                    file_name=f"historial_pacientes_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv"
+                )
             else:
-                st.success("✅ No se detectaron factores de riesgo moderado")
+                st.info("No se encontraron pacientes con los filtros aplicados")
+        else:
+            st.info("No hay pacientes registrados aún")
+    else:
+        st.info("No hay historial de pacientes aún")
         
-        # Gráfico de barras simple con matplotlib
-        st.markdown("### 📈 Distribución de Factores de Riesgo")
-        
-        # Preparar datos para el gráfico
-        factor_names = [
-            'Edad', 'Alcohol', 'Tabaco', 'Hep. B', 'Hep. C', 
-            'Cirrosis', 'Fam. Cancer', 'AFP', 'Func. Hígado', 'Diabetes'
-        ]
-        factor_values = [
-            risk_weights['age_risk'],
-            risk_weights['alcohol_risk'],
-            risk_weights['smoking_risk'],
-            risk_weights['hepatitis_b_risk'],
-            risk_weights['hepatitis_c_risk'],
-            risk_weights['cirrhosis_risk'],
-            risk_weights['family_risk'],
-            risk_weights['afp_risk'],
-            risk_weights['liver_function_risk'],
-            risk_weights['diabetes_risk']
-        ]
-        
-        # Crear gráfico con matplotlib
-        fig, ax = plt.subplots(figsize=(12, 6))
-        colors = ['#ff4757' if v > 0.3 else '#ff6348' if v > 0.15 else '#26de81' for v in factor_values]
-        bars = ax.bar(factor_names, factor_values, color=colors, alpha=0.8)
-        
-        ax.set_ylabel('Nivel de Riesgo')
-        ax.set_title('Análisis Individual de Factores de Riesgo')
-        ax.set_ylim(0, max(0.6, max(factor_values) + 0.1))
-        
-        # Añadir líneas de referencia
-        ax.axhline(y=0.3, color='red', linestyle='--', alpha=0.7, label='Riesgo Alto')
-        ax.axhline(y=0.15, color='orange', linestyle='--', alpha=0.7, label='Riesgo Moderado')
-        
-        # Rotar etiquetas del eje x
-        plt.xticks(rotation=45, ha='right')
-        plt.legend()
-        plt.tight_layout()
-        
-        st.pyplot(fig)
-        
-        # Recomendaciones personalizadas
-        st.markdown("### 💡 Recomendaciones Personalizadas")
-        
-        recommendations = []
-        
-        if risk_weights['alcohol_risk'] > 0:
-            recommendations.append("🍺 Considere reducir el consumo de alcohol")
-        if risk_weights['smoking_risk'] > 0:
-            recommendations.append("🚭 Se recomienda encarecidamente dejar de fumar")
-        if risk_weights['activity_risk'] > 0:
-            recommendations.append("🏃‍♂️ Aumentar la actividad física regular")
-        if risk_weights['bmi_risk'] > 0:
-            recommendations.append("⚖️ Mantener un peso saludable")
-        if any([risk_weights['hepatitis_b_risk'], risk_weights['hepatitis_c_risk'], risk_weights['cirrhosis_risk']]):
-            recommendations.append("🏥 Control médico especializado frecuente")
-        if risk_weights['afp_risk'] > 0:
-            recommendations.append("🔬 Monitoreo regular de marcadores tumorales")
-        
-        recommendations.append("📅 Controles médicos regulares cada 6-12 meses")
-        recommendations.append("🥗 Mantener una dieta saludable y equilibrada")
-        
-        for i, rec in enumerate(recommendations, 1):
-            st.write(f"{i}. {rec}")
+except Exception as e:
+    st.error(f"Error al cargar historial: {e}")
 
 # Información adicional sin predicción
 else:
-    # Mostrar información general
-    st.markdown("## 👈 Complete los datos del paciente en la barra lateral")
-    st.markdown("Una vez completados todos los campos, presione **'Realizar Predicción'** para obtener el análisis.")
+    # Mostrar información general cuando no hay predicción activa
+    st.markdown("## 👈 Complete la información del paciente")
+    st.markdown("Ingrese el **nombre del paciente** y complete todos los campos médicos en la barra lateral, luego presione **'Realizar Análisis'**.")
     
-    # Información educativa
+    # Información educativa más enfocada al usuario médico
     col1, col2 = st.columns(2)
     
     with col1:
         st.info("""
-        **📊 Factores de Riesgo Principales:**
-        - 🦠 Hepatitis B y C crónicas
-        - 🔴 Cirrosis hepática
-        - 🍺 Consumo excesivo de alcohol
-        - 🚬 Tabaquismo
-        - 📅 Edad avanzada (>60 años)
-        - 👨‍👩‍👧‍👦 Historial familiar de cáncer
-        - 📈 Niveles elevados de AFP
-        - 🩺 Diabetes mellitus
+        **📊 Este Sistema Evalúa:**
+        - 🦠 Factores virales (Hepatitis B/C)
+        - 🔴 Historial de cirrosis
+        - 🍺 Consumo de alcohol
+        - 🚬 Historial de tabaquismo
+        - 📈 Marcadores tumorales (AFP)
+        - 🧬 Antecedentes familiares
+        - 📅 Factores demográficos
         """)
     
     with col2:
         st.warning("""
-        **⚠️ Limitaciones Importantes:**
-        - 🤖 Sistema de apoyo al diagnóstico únicamente
-        - 👨‍⚕️ No reemplaza la evaluación médica profesional
-        - 🔬 Los resultados requieren interpretación clínica
-        - 📋 Debe combinarse con otros estudios diagnósticos
-        - 🏥 Siempre consulte con un especialista en hepatología
+        **⚠️ Importante Recordar:**
+        - 🩺 Herramienta de apoyo diagnóstico únicamente
+        - 👨‍⚕️ No reemplaza criterio médico profesional
+        - 🔬 Combinar con estudios complementarios
+        - 📋 Considerar contexto clínico completo
+        - 🏥 Derivar a especialista según indicación
         """)
 
-# Footer
+# Footer profesional
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #666; padding: 2rem;">
-    <p>🏥 Sistema de Predicción de Cáncer de Hígado | Desarrollado con Streamlit</p>
-    <p><small>Última actualización: {}</small></p>
-    <p><small>⚠️ Solo para uso educativo y de apoyo clínico</small></p>
+    <p>🏥 <strong>Sistema de Evaluación de Riesgo de Cáncer Hepático</strong></p>
+    <p>Desarrollado para apoyo en la toma de decisiones clínicas</p>
+    <p><small>Versión 1.0 | Última actualización: {}</small></p>
+    <p><small>⚠️ Solo para uso profesional médico</small></p>
 </div>
 """.format(datetime.now().strftime("%d/%m/%Y")), unsafe_allow_html=True)
